@@ -8,5 +8,5 @@
 # all tests
 uv run pytest -v
 # single file
-uv run pytest tests/engram/test_buffer.py -v
+uv run pytest tests/engram/data/test_buffer.py -v
 ```

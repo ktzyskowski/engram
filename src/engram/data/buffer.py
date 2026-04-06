@@ -72,24 +72,25 @@ class ReplayBuffer:
         if self.buffer_index == 0:
             self.is_full = True
 
-    def sample(self, batch_size, sequence_length):
+    def sample(self, batch_size, sequence_length) -> dict:
         """Sample a batch of sequences of transitions from the replay buffer.
 
+        A single sequence may contain multiple episode trajectories if the
+        episode lengths are short enough. It is the caller's responsibility
+        to reset recurrent state or memory according to the done flag.
+
         Args:
-            batch_size (int):
-            sequence_length (int):
+            batch_size (int): number of sequences in batch.
+            sequence_length (int): length of each sequence in batch.
 
         Returns:
-            batch (dict):
+            batch (dict): dictionary containing batch observations, actions, rewards, and dones.
 
         """
         if len(self) < sequence_length:
-            raise ValueError(
-                "Buffer not full enough to sample requested sequence length."
-            )
+            raise ValueError("Buffer not full enough.")
 
-        # depending on whether buffer is full, we curate the pool of
-        # available start indices to sample
+        # curate the pool of available start indices to sample
         if not self.is_full:
             # if not full yet, only sample from sequences that meet desired length.
             # anything that crosses beyond write boundary is invalid data

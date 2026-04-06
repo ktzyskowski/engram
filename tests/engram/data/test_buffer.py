@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from engram.buffer import ReplayBuffer
+from engram.data.buffer import ReplayBuffer
 
 # ---------------------------------------------------------------------------
 # helpers
