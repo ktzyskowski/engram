@@ -4,10 +4,12 @@ from typing import Any
 
 import gymnasium as gym
 import torch
+from torch import optim
 import torch.nn.functional as F
 from torch import Tensor
 
 from engram.data.buffer import ReplayBuffer
+from engram.losses.world_model import WorldModelLoss
 from engram.nets.mlp import MLP
 from engram.rl.rssm import RSSM
 from engram.tools.conditionals import Ratio
@@ -106,9 +108,37 @@ class DreamerV3:
             action_dtype="uint8",
         )
 
+        # loss -------------------------------------------------------------- #
+
+        self._world_model_loss_fn = WorldModelLoss(
+            beta_posterior=0.1,
+            beta_prior=0.5,
+            beta_prediction=1.0,
+            free_nats=1.0,
+        )
+
         # torch ------------------------------------------------------------- #
         self._device = device
         self._rssm.compile()
+
+        self._world_model_optimizer = optim.Adam(
+            [
+                *self._encoder.parameters(),
+                *self._decoder.parameters(),
+                *self._rssm.parameters(),
+                *self._continue_head.parameters(),
+                *self._reward_head.parameters(),
+            ],
+            lr=params["world_model_lr"],
+        )
+        self.actor_optimizer = optim.Adam(
+            self._actor.parameters(),
+            lr=params["actor_lr"],
+        )
+        self.critic_optimizer = optim.Adam(
+            self._fast_critic.parameters(),
+            lr=params["critic_lr"],
+        )
 
     def train(self, steps: int) -> None:
         obs, _ = self._env.reset()
@@ -147,9 +177,22 @@ class DreamerV3:
         )
 
         # world model forward pass ------------------------------------------ #
-        self._world_model_optim.zero_grad()
+        self._world_model_optimizer.zero_grad()
         encoded_obs = self._encoder(batch["observations"])
         rssm_output = self._rssm(encoded_obs, batch["actions"], batch["dones"])
+        reward_logits = self._reward_head(rssm_output["full_states"])
+        continue_logits = self._continue_head(rssm_output["full_states"])
+        reconstructed_obs = self._decoder(rssm_output["full_states"])
+        world_model_loss = self._world_model_loss_fn(
+            obs=batch["observations"],
+            dones=batch["dones"],
+            target_reward_logits=self._two_hot.encode(batch["rewards"]),
+            reconstructed_obs=reconstructed_obs,
+            continue_logits=continue_logits,
+            reward_logits=reward_logits,
+        )
+        world_model_loss.backward()
+        self._world_model_optimizer.step()
 
     def save(self, path) -> None:
         pass
