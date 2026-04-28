@@ -1,5 +1,6 @@
 import numpy as np
 import torch
+from torch import Tensor
 
 
 class ReplayBuffer:
@@ -10,7 +11,7 @@ class ReplayBuffer:
         capacity: int,
         dtype: str = "float32",
         action_dtype: str = "uint8",
-    ):
+    ) -> None:
         """Construct an new, empty replay buffer.
 
         Args:
@@ -37,7 +38,13 @@ class ReplayBuffer:
         """Get the current number of transitions stored in the buffer."""
         return self.capacity if self.is_full else self.buffer_index
 
-    def add(self, observation, action, reward, done):
+    def add(
+        self,
+        obs: Tensor | np.ndarray,
+        action: Tensor | np.ndarray,
+        reward: float,
+        done: bool,
+    ) -> None:
         """Add a transition to the replay buffer
 
         The next observation is not stored, because this is a sequential replay
@@ -54,12 +61,12 @@ class ReplayBuffer:
         """
 
         # convert to numpy arrays if tensors are givens
-        if torch.is_tensor(observation):
-            observation = observation.numpy(force=True)
+        if torch.is_tensor(obs):
+            obs = obs.numpy(force=True)
         if torch.is_tensor(action):
             action = action.numpy(force=True)
 
-        self.observations[self.buffer_index] = observation
+        self.observations[self.buffer_index] = obs
         self.actions[self.buffer_index] = action
         self.rewards[self.buffer_index] = reward
         self.dones[self.buffer_index] = done
@@ -69,7 +76,7 @@ class ReplayBuffer:
         if self.buffer_index == 0:
             self.is_full = True
 
-    def sample(self, batch_size: int, sequence_length: int) -> dict:
+    def sample(self, batch_size: int, sequence_length: int) -> dict[str, np.ndarray]:
         """Sample from the replay buffer.
 
         Args:
@@ -120,7 +127,7 @@ class ReplayBuffer:
         sequence_length: int,
         device="cpu",
         dtype=torch.float32,
-    ) -> dict:
+    ) -> dict[str, Tensor]:
         """Sample PyTorch tensors from the replay buffer.
 
         Args:

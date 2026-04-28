@@ -11,7 +11,8 @@ class MLP(nn.Module):
         hidden_sizes: list[int],
         output_size: int,
         activation: str,
-    ):
+        zero_output_weights: bool = False,
+    ) -> None:
         super().__init__()
         assert len(hidden_sizes) > 0
 
@@ -25,6 +26,14 @@ class MLP(nn.Module):
         layers = layers[:-1]
         self.net = nn.Sequential(*layers)
 
+        if zero_output_weights:
+            nn.init.zeros_(self.net[-1].weight)  # type: ignore
+            nn.init.zeros_(self.net[-1].bias)  # type: ignore
+
     def forward(self, x: Tensor) -> Tensor:
         y = self.net(x)
         return y
+
+    def requires_grad_(self, mode: bool) -> None:
+        for param in self.parameters():
+            param.requires_grad_(mode)

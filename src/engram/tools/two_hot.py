@@ -34,7 +34,7 @@ def symexp(x: Tensor) -> Tensor:
 class SymlogTwoHot(nn.Module):
     """Symlog two-hot module."""
 
-    def __init__(self, low: float, high: float, n_bins: int):
+    def __init__(self, low: float, high: float, n_bins: int) -> None:
         """Construct a new symlog two-hot encoder.
 
         Args:

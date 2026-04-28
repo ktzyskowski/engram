@@ -6,7 +6,7 @@ from torch import Tensor
 class EMA(nn.Module):
     """Exponential Moving Average."""
 
-    def __init__(self, decay: float):
+    def __init__(self, decay: float) -> None:
         """Create new EMA module.
 
         Args:

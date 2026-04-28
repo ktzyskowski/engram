@@ -10,7 +10,7 @@ class CheckpointManager:
         self,
         modules: dict[str, nn.Module | optim.Optimizer],
         directory: str = "checkpoints",
-    ):
+    ) -> None:
         self._modules = modules
         self._directory = directory
         os.makedirs(self._directory, exist_ok=True)
@@ -23,7 +23,7 @@ class CheckpointManager:
         }
         torch.save(payload, path)
 
-    def load(self, path: str, device: str = "cpu"):
+    def load(self, path: str, device: str = "cpu") -> dict[str, int]:
         checkpoint = torch.load(path, map_location=device)
         for key, module in self._modules.items():
             module.load_state_dict(checkpoint[key])

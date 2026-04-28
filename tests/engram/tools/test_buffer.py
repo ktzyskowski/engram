@@ -2,7 +2,7 @@ import numpy as np
 import pytest
 import torch
 
-from engram.tools.buffer import ReplayBuffer
+from engram.data.buffer import ReplayBuffer
 
 
 def _make_buffer(capacity=10, obs_shape=(2,), action_size=3, dtype="float32"):
@@ -59,7 +59,7 @@ def test_add_wraps_around():
 def test_add_accepts_torch_tensors():
     buffer = _make_buffer(capacity=4)
     buffer.add(
-        observation=torch.tensor([1.0, 2.0]),
+        obs=torch.tensor([1.0, 2.0]),
         action=torch.tensor([0.0, 1.0, 0.0]),
         reward=0.5,
         done=False,

@@ -1,3 +1,6 @@
+import pstats
+from typing import Any
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -21,7 +24,8 @@ class RSSM(nn.Module):
         prior_hidden_sizes: list[int],
         posterior_activation: str = "rmsnorm+silu",
         prior_activation: str = "rmsnorm+silu",
-    ):
+        unimix: float = 0.01,
+    ) -> None:
         super().__init__()
         self._observation_size = observation_size
         self._action_size = action_size
@@ -30,6 +34,7 @@ class RSSM(nn.Module):
         self._full_size = self._recurrent_size + self._stochastic_size
         self._n_categoricals = n_categoricals
         self._n_classes = n_classes
+        self._unimix = unimix
 
         # encoder (sans perception)
         # z ~ p(z|h,x)
@@ -55,6 +60,25 @@ class RSSM(nn.Module):
             input_size=self._stochastic_size + self._action_size,
             hidden_size=self._recurrent_size,
         )
+
+    @property
+    def full_state_size(self) -> int:
+        return self._full_size
+
+    def get_initial_recurrent_state(self) -> Tensor:
+        h = torch.zeros(self._recurrent_size)
+        return h
+
+    def get_posterior(self, observation: Tensor, h: Tensor) -> tuple[Tensor, Tensor]:
+        z_logits = self._posterior_net(torch.cat([h, observation], dim=-1))
+        z_logits = z_logits.unflatten(-1, (self._n_categoricals, self._n_classes))
+        z_logits = unimix(z_logits, frac=self._unimix)
+        z = F.gumbel_softmax(z_logits, tau=1.0, hard=True).flatten(start_dim=-2)
+        return z, z_logits
+
+    def step(self, z: Tensor, h: Tensor, action: Tensor) -> Tensor:
+        h_next = self._recurrent_net(torch.cat([z, action], dim=-1), h)
+        return h_next
 
     def forward(
         self,
@@ -90,23 +114,11 @@ class RSSM(nn.Module):
 
         h = torch.zeros((B, self._recurrent_size), device=device)
         for t in range(T):
-            # ----------------------------------------------------------------------------------- #
-            # get posterior logits from posterior net, mix with uniform distribution
-            z_logits = self._posterior_net(torch.cat([h, observations[:, t]], dim=-1))
-            z_logits = z_logits.unflatten(-1, (self._n_categoricals, self._n_classes))
-            z_logits = unimix(z_logits, frac=0.01)
-            # use gumbel softmax for straight-through gradients with onehot argmax sampling
-            z = F.gumbel_softmax(z_logits, tau=1.0, hard=True)
-            # flatten (n_categoricals, n_classes) into single feature dimension
-            z = z.flatten(start_dim=-2)
-            # ----------------------------------------------------------------------------------- #
-            # get next recurrent state from stochastic state and prior recurrent state
-            h_next = self._recurrent_net(torch.cat([z, actions[:, t]], dim=-1), h)
-            # ----------------------------------------------------------------------------------- #
+            z, z_logits = self.get_posterior(observations[:, t], h)
+            h_next = self.step(z, h, actions[:, t])
             output["full_states"].append(torch.cat([h, z], dim=-1))
             output["recurrent_states"].append(h)
             output["posterior_logits"].append(z_logits)
-            # ----------------------------------------------------------------------------------- #
             # reset recurrent state if episode terminates mid-sequence
             not_done = (~dones[:, t].bool()).unsqueeze(-1)
             h = h_next * not_done
@@ -119,7 +131,7 @@ class RSSM(nn.Module):
         prior_logits = prior_logits.unflatten(
             -1, (self._n_categoricals, self._n_classes)
         )
-        prior_logits = unimix(prior_logits, frac=0.01)
+        prior_logits = unimix(prior_logits, frac=self._unimix)
         output["prior_logits"] = prior_logits
 
         return output
