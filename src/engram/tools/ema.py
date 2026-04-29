@@ -16,15 +16,15 @@ class EMA(nn.Module):
         assert 0 < decay < 1
 
         self._decay = decay
-        self._average: Tensor
-        self._step: Tensor
+        self.average: Tensor
+        self.step: Tensor
         self.register_buffer("average", torch.zeros(()))
         self.register_buffer("step", torch.zeros((), dtype=torch.long))
 
     @torch.no_grad()
     def forward(self, x: Tensor) -> Tensor:
         """Update and return the EMA."""
-        self._step.add_(1)
-        self._average.mul_(self._decay).add_(x.detach(), alpha=1 - self._decay)
-        correction = 1 - self._decay**self._step
-        return self._average / correction
+        self.step.add_(1)
+        self.average.mul_(self._decay).add_(x.detach(), alpha=1 - self._decay)
+        correction = 1 - self._decay**self.step
+        return self.average / correction

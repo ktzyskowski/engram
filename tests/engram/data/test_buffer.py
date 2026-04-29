@@ -20,7 +20,7 @@ def _fill(buffer, n, dones=None):
     for t in range(n):
         done = bool(dones[t]) if dones is not None else False
         buffer.add(
-            observation=np.array([t, t], dtype=np.float32),
+            obs=np.array([t, t], dtype=np.float32),
             action=np.zeros(3, dtype=np.float32),
             reward=float(t),
             done=done,

@@ -28,6 +28,7 @@ class DreamerV3:
         device: str = "cuda",
         batch_size: int = 16,
         sequence_length: int = 64,
+        prefill_steps: int = 1_024,
     ) -> None:
         self._env = env
 
@@ -42,6 +43,7 @@ class DreamerV3:
         self._device = device
         self._batch_size = batch_size
         self._sequence_length = sequence_length
+        self._prefill_steps = prefill_steps
 
         # world model ------------------------------------------------------- #
         self._rssm = RSSM(
@@ -169,15 +171,19 @@ class DreamerV3:
         gradient_step = 0
 
         for step in range(steps):
+            metrics: dict[str, int | float] = {"step": step}
             obs, h, reward, done = self.collect_step(obs, h)
             episode_return += reward
             episode_length += 1
 
-            metrics: dict[str, int | float] = {"step": step}
-            for _ in range(self._train_ratio()):
-                metrics = self.update_step()
-                gradient_step += 1
-            metrics["gradient_step"] = gradient_step
+            if (
+                step >= self._prefill_steps
+                and len(self._replay_buffer) >= self._sequence_length
+            ):
+                for _ in range(self._train_ratio()):
+                    metrics |= self.update_step()
+                    gradient_step += 1
+                metrics["gradient_step"] = gradient_step
 
             if done:
                 metrics |= {
@@ -274,13 +280,23 @@ class DreamerV3:
         self._actor_optimizer.zero_grad()
         self._critic_optimizer.zero_grad()
 
+        # flatten (B, T) into a single batch dim of seeds for dream_rollout,
+        # then unflatten the dream outputs back to (B, T, T_dream, ...).
+        B, T = h.shape[:2]
+        h_seed = h.detach().flatten(0, 1)
+        z_seed = z.detach().flatten(0, 1)
         h, z, actions, action_log_probs = dream_rollout(
             rssm=self._rssm,
             actor=self._actor,
-            h=h.detach(),
-            z=z.detach(),
+            h=h_seed,
+            z=z_seed,
             horizon=self._dream_horizon,
         )
+        h = h.unflatten(0, (B, T))
+        z = z.unflatten(0, (B, T))
+        actions = actions.unflatten(0, (B, T))
+        action_log_probs = action_log_probs.unflatten(0, (B, T))
+
         full_states = torch.cat([h, z], dim=-1)
         reward_logits = self._reward_head(full_states)
         continue_logits = self._continue_head(full_states)
@@ -314,8 +330,9 @@ class DreamerV3:
             replay_target=self._two_hot.encode(replay_lambda_returns),
         )
 
-        actor_loss.backward()
-        critic_loss.backward()
+        # actor and critic share the dream-rollout graph, so combine into one
+        # backward pass. each optimizer steps its own parameter group.
+        (actor_loss + critic_loss).backward()
         self._actor_optimizer.step()
         self._critic_optimizer.step()
 
