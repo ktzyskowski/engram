@@ -12,25 +12,25 @@ def calc_lambda_returns(
     """Calculate lambda returns for a given sequence of observed rewards and critic values.
 
     Args:
-        rewards     (..., L): tensor of observed rewards.
-        continues   (..., L): tensor of continue flags.
-        values      (..., L): tensor of critic values.
+        rewards     (*): tensor of observed rewards.
+        continues   (*): tensor of continue flags.
+        values      (*): tensor of critic values.
         discount    (float):  discount factor (gamma).
         decay       (float):  trace decay factor (lambda).
     Returns:
-        returns     (..., L): tensor of lambda returns.
+        returns     (*): tensor of lambda returns.
     """
     returns = torch.zeros_like(values)
 
     # last timestep in sequence
     T = rewards.shape[-1] - 1
 
-    # the return at time T is equal to the value at time T
+    # the return at time T is equal to the value at time T (bootstrapped)
     returns[..., T] = values[..., T]
 
     for t in reversed(range(T)):
-        # target is a linear interpolation between critic values and observed return
-        target = (1 - decay) * values[..., t + 1] + decay * returns[..., t + 1]
-        returns[..., t] = rewards[..., t] + discount * continues[..., t] * target
+        # future return is a linear interpolation between critic values and monte carlo return
+        next_return = (1 - decay) * values[..., t + 1] + decay * returns[..., t + 1]
+        returns[..., t] = rewards[..., t] + discount * continues[..., t] * next_return
 
     return returns

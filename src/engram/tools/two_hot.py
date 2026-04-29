@@ -1,9 +1,8 @@
 import torch
 import torch.nn as nn
-from torch import Tensor
 
 
-def symlog(x: Tensor) -> Tensor:
+def symlog(x: torch.Tensor) -> torch.Tensor:
     """Compute symlog function.
 
     Eq (9) in paper.
@@ -17,7 +16,7 @@ def symlog(x: Tensor) -> Tensor:
     return y
 
 
-def symexp(x: Tensor) -> Tensor:
+def symexp(x: torch.Tensor) -> torch.Tensor:
     """Compute symexp function.
 
     Eq (9) in paper.
@@ -48,10 +47,10 @@ class SymlogTwoHot(nn.Module):
         self._n_bins = n_bins
         self._bin_width = (high - low) / (n_bins - 1)
 
-        self._bins: Tensor
+        self._bins: torch.Tensor
         self.register_buffer("_bins", torch.linspace(low, high, n_bins))
 
-    def encode(self, y: Tensor) -> Tensor:
+    def encode(self, y: torch.Tensor) -> torch.Tensor:
         """Encode the given scalars into symlog two-hot encodings.
 
         Args:
@@ -66,12 +65,12 @@ class SymlogTwoHot(nn.Module):
         upper_weight = pos - k
         lower_weight = 1.0 - upper_weight
 
-        twohot = torch.zeros(*y.shape, self._n_bins, dtype=y.dtype, device=y.device)
-        twohot.scatter_(-1, k.unsqueeze(-1), lower_weight.unsqueeze(-1))
-        twohot.scatter_(-1, (k + 1).unsqueeze(-1), upper_weight.unsqueeze(-1))
-        return twohot
+        two_hot = torch.zeros(*y.shape, self._n_bins, dtype=y.dtype, device=y.device)
+        two_hot.scatter_(-1, k.unsqueeze(-1), lower_weight.unsqueeze(-1))
+        two_hot.scatter_(-1, (k + 1).unsqueeze(-1), upper_weight.unsqueeze(-1))
+        return two_hot
 
-    def decode_logits(self, logits: Tensor) -> Tensor:
+    def decode_logits(self, logits: torch.Tensor) -> torch.Tensor:
         """Decode the given logits into a scalar value.
 
         Args:

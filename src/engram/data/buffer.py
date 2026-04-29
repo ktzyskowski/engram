@@ -10,7 +10,7 @@ class ReplayBuffer:
         action_size: int,
         capacity: int,
         dtype: str = "float32",
-        action_dtype: str = "uint8",
+        action_dtype: str = "float32",
     ) -> None:
         """Construct an new, empty replay buffer.
 

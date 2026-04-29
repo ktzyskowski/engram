@@ -59,7 +59,7 @@ class WorldModelLoss(nn.Module):
         reward_logits: Tensor,
         posterior_log_probs: Tensor,
         prior_log_probs: Tensor,
-    ) -> Tensor:
+    ) -> tuple[Tensor, dict[str, float]]:
         """Compute world model loss.
 
         Args:
@@ -92,4 +92,12 @@ class WorldModelLoss(nn.Module):
             + self._beta_posterior * posterior_loss
             + self._beta_prior * prior_loss
         )
-        return loss
+        metrics = {
+            "world_model/loss": loss.detach().item(),
+            "world_model/obs_loss": obs_loss.detach().item(),
+            "world_model/continue_loss": continue_loss.detach().item(),
+            "world_model/reward_loss": reward_loss.detach().item(),
+            "world_model/posterior_kl": posterior_loss.detach().item(),
+            "world_model/prior_kl": prior_loss.detach().item(),
+        }
+        return loss, metrics

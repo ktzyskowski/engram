@@ -1,6 +1,3 @@
-import pstats
-from typing import Any
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -31,7 +28,6 @@ class RSSM(nn.Module):
         self._action_size = action_size
         self._recurrent_size = recurrent_size
         self._stochastic_size = n_categoricals * n_classes
-        self._full_size = self._recurrent_size + self._stochastic_size
         self._n_categoricals = n_categoricals
         self._n_classes = n_classes
         self._unimix = unimix
@@ -63,20 +59,47 @@ class RSSM(nn.Module):
 
     @property
     def full_state_size(self) -> int:
-        return self._full_size
+        """Get full model state size.
+
+        Equivalent to: (n_categoricals x n_classes) + recurrent_size
+        """
+        return self._recurrent_size + self._stochastic_size
 
     def get_initial_recurrent_state(self) -> Tensor:
+        """Get the initial recurrent state vector (zeros), with no batch dimension.
+
+        Returns:
+            h (D_h): initial recurrent state vector.
+        """
         h = torch.zeros(self._recurrent_size)
         return h
 
-    def get_posterior(self, observation: Tensor, h: Tensor) -> tuple[Tensor, Tensor]:
-        z_logits = self._posterior_net(torch.cat([h, observation], dim=-1))
-        z_logits = z_logits.unflatten(-1, (self._n_categoricals, self._n_classes))
-        z_logits = unimix(z_logits, frac=self._unimix)
-        z = F.gumbel_softmax(z_logits, tau=1.0, hard=True).flatten(start_dim=-2)
-        return z, z_logits
+    def get_stochastic_state(self, logits: Tensor) -> tuple[Tensor, Tensor]:
+        logits = logits.unflatten(-1, (self._n_categoricals, self._n_classes))
+        log_probs = unimix(logits, frac=self._unimix)
+        z = F.gumbel_softmax(log_probs, tau=1.0, hard=True).flatten(start_dim=-2)
+        return z, log_probs
 
-    def step(self, z: Tensor, h: Tensor, action: Tensor) -> Tensor:
+    def get_posterior(self, observation: Tensor, h: Tensor) -> tuple[Tensor, Tensor]:
+        logits = self._posterior_net(torch.cat([h, observation], dim=-1))
+        z, log_probs = self.get_stochastic_state(logits)
+        return z, log_probs
+
+    def get_prior(self, h: Tensor) -> Tensor:
+        logits = self._prior_net(h)
+        z, _ = self.get_stochastic_state(logits)
+        return z
+
+    def step(self, h: Tensor, z: Tensor, action: Tensor) -> Tensor:
+        """Step the recurrent sequence model.
+
+        Args:
+            h       (*, D_h): recurrent state.
+            z       (*, D_z): stochastic state.
+            action  (*, A): one-hot action tensor.
+        Returns:
+            h_next  (*, D_h): next recurrent state.
+        """
         h_next = self._recurrent_net(torch.cat([z, action], dim=-1), h)
         return h_next
 
@@ -85,12 +108,12 @@ class RSSM(nn.Module):
         observations: Tensor,
         actions: Tensor,
         dones: Tensor,
-    ) -> dict[str, Tensor]:
+    ) -> tuple[Tensor, Tensor, Tensor, Tensor]:
         """Forward pass through the RSSM.
 
         The model generates full model states (recurrent + stochastic) for downstream
         predictors, recurrent states for seeding dream rollouts, and posterior/prior
-        logits for loss calculation.
+        log-probabilities for loss calculation.
 
         Args:
             observations        (B, T, O):      tensor of encoded observations.
@@ -99,39 +122,38 @@ class RSSM(nn.Module):
         Returns:
             full_states         (B, T, H_full): tensor of full model states (h, z).
             recurrent_states    (B, T, H_rec):  tensor of recurrent states (h).
-            posterior_logits    (B, T, K, C):   tensor of posterior logits (categorical, class).
-            prior_logits        (B, T, K, C):   tensor of prior logits (categorical, class).
+            posterior_log_probs (B, T, K, C):   tensor of posterior state log-probs (categorical, class).
+            prior_log_probs     (B, T, K, C):   tensor of prior state log-probs (categorical, class).
         """
         B = observations.shape[0]  # batch size
         T = observations.shape[1]  # sequence length
         device = observations.device
 
-        output = {
-            "full_states": [],
-            "recurrent_states": [],
-            "posterior_logits": [],
-        }
+        recurrent_states = []
+        stochastic_states = []
+        posterior_log_probs = []
 
         h = torch.zeros((B, self._recurrent_size), device=device)
         for t in range(T):
-            z, z_logits = self.get_posterior(observations[:, t], h)
-            h_next = self.step(z, h, actions[:, t])
-            output["full_states"].append(torch.cat([h, z], dim=-1))
-            output["recurrent_states"].append(h)
-            output["posterior_logits"].append(z_logits)
+            z, z_log_probs = self.get_posterior(observations[:, t], h)
+            recurrent_states.append(h)
+            stochastic_states.append(z)
+            posterior_log_probs.append(z_log_probs)
             # reset recurrent state if episode terminates mid-sequence
             not_done = (~dones[:, t].bool()).unsqueeze(-1)
+            h_next = self.step(h, z, actions[:, t])
             h = h_next * not_done
 
         # stack accumulated tensors in sequence dim
-        output = {k: torch.stack(tensors, dim=1) for k, tensors in output.items()}
+        recurrent_states = torch.stack(recurrent_states, dim=1)
+        stochastic_states = torch.stack(stochastic_states, dim=1)
+        posterior_log_probs = torch.stack(posterior_log_probs, dim=1)
 
         # prior not used during loop, so we can batch compute prior logits
-        prior_logits = self._prior_net(output["recurrent_states"])
+        prior_logits = self._prior_net(recurrent_states)
         prior_logits = prior_logits.unflatten(
             -1, (self._n_categoricals, self._n_classes)
         )
-        prior_logits = unimix(prior_logits, frac=self._unimix)
-        output["prior_logits"] = prior_logits
+        prior_log_probs = unimix(prior_logits, frac=self._unimix)
 
-        return output
+        return recurrent_states, stochastic_states, posterior_log_probs, prior_log_probs
