@@ -17,6 +17,7 @@ class RMSNormSiLU(nn.Module):
         super().__init__()
 
     def forward(self, x) -> Tensor:
-        x = F.rms_norm(x, (x.shape[-1],))
-        x = F.silu(x)
+        # x = F.rms_norm(x, (x.shape[-1],))
+        rms = x.pow(2).mean(-1, keepdim=True).add(1e-6).rsqrt()
+        x = F.silu(x * rms)
         return x

@@ -15,6 +15,7 @@ from engram.nets.mlp import MLP
 from engram.rl.policy import sample_action
 from engram.rl.returns import calc_lambda_returns
 from engram.rl.rssm import RSSM
+from engram.tools.checkpoint import CheckpointManager
 from engram.tools.conditionals import Ratio
 from engram.tools.gym import get_action_size
 from engram.tools.two_hot import SymlogTwoHot
@@ -31,6 +32,7 @@ class DreamerV3:
         prefill_steps: int = 1_024,
     ) -> None:
         self._env = env
+        self._eval_env = gym.make(env.spec.id) if env.spec else copy.deepcopy(env)
 
         # TODO: hard-code to MLP encoder for now, change to CNN later
         observation_shape = env.observation_space.shape
@@ -45,7 +47,23 @@ class DreamerV3:
         self._sequence_length = sequence_length
         self._prefill_steps = prefill_steps
 
+        # utilities --------------------------------------------------------- #
+
+        self._two_hot = SymlogTwoHot(
+            low=params["two_hot_low"],
+            high=params["two_hot_high"],
+            n_bins=params["two_hot_n_bins"],
+        ).to(self._device)
+
+        self._replay_buffer = ReplayBuffer(
+            observation_shape=observation_shape,
+            action_size=self._action_size,
+            capacity=100_000,
+            dtype="float32",
+            action_dtype="float32",
+        )
         # world model ------------------------------------------------------- #
+
         self._rssm = RSSM(
             n_categoricals=params["n_categoricals"],
             n_classes=params["n_classes"],
@@ -58,6 +76,8 @@ class DreamerV3:
             prior_activation=params["prior_activation"],
             unimix=params["unimix"],
         ).to(self._device)
+        self._rssm.compile()
+
         self._reward_head = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["reward_hidden_sizes"],
@@ -65,6 +85,7 @@ class DreamerV3:
             activation=params["reward_activation"],
             zero_output_weights=True,
         ).to(self._device)
+
         self._continue_head = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["continue_hidden_sizes"],
@@ -73,12 +94,14 @@ class DreamerV3:
         ).to(self._device)
 
         # actor & critic ---------------------------------------------------- #
+
         self._actor = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["actor_hidden_sizes"],
             output_size=self._action_size,
             activation=params["actor_activation"],
         ).to(self._device)
+
         self._fast_critic = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["critic_hidden_sizes"],
@@ -86,36 +109,25 @@ class DreamerV3:
             activation=params["critic_activation"],
             zero_output_weights=True,
         ).to(self._device)
+
         self._slow_critic = copy.deepcopy(self._fast_critic)
         self._slow_critic.requires_grad_(False)
 
         # encoder & decoder ------------------------------------------------- #
+
         self._encoder = MLP(
             input_size=self._observation_size,
             hidden_sizes=params["encoder_hidden_sizes"],
             output_size=params["encoder_output_size"],
             activation=params["encoder_activation"],
         ).to(self._device)
+
         self._decoder = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["decoder_hidden_sizes"],
             output_size=params["observation_size"],
             activation=params["decoder_activation"],
         ).to(self._device)
-
-        # utilities --------------------------------------------------------- #
-        self._two_hot = SymlogTwoHot(
-            low=params["two_hot_low"],
-            high=params["two_hot_high"],
-            n_bins=params["two_hot_n_bins"],
-        ).to(self._device)
-        self._replay_buffer = ReplayBuffer(
-            observation_shape=observation_shape,
-            action_size=self._action_size,
-            capacity=100_000,
-            dtype="float32",
-            action_dtype="float32",
-        )
 
         # loss -------------------------------------------------------------- #
 
@@ -138,7 +150,6 @@ class DreamerV3:
         ).to(self._device)
 
         # torch ------------------------------------------------------------- #
-        self._rssm.compile()
 
         self._world_model_optimizer = optim.Adam(
             [
@@ -183,7 +194,7 @@ class DreamerV3:
                 for _ in range(self._train_ratio()):
                     metrics |= self.update_step()
                     gradient_step += 1
-                metrics["gradient_step"] = gradient_step
+            metrics["gradient_step"] = gradient_step
 
             if done:
                 metrics |= {
@@ -215,7 +226,7 @@ class DreamerV3:
         if done:
             obs, _ = self._env.reset()
             obs = torch.from_numpy(obs).to(self._device)
-            h_next = self._rssm.get_initial_recurrent_state()
+            h_next = self._rssm.get_initial_recurrent_state().to(self._device)
         else:
             obs = torch.from_numpy(next_obs).to(self._device)
         return obs, h_next, reward, done
@@ -345,8 +356,86 @@ class DreamerV3:
 
         return {**actor_metrics, **critic_metrics}
 
-    def save(self, path) -> None:
-        pass
+    def _checkpoint_manager(self, directory: str = "checkpoints") -> CheckpointManager:
+        return CheckpointManager(
+            modules={
+                "rssm": self._rssm,
+                "encoder": self._encoder,
+                "decoder": self._decoder,
+                "reward_head": self._reward_head,
+                "continue_head": self._continue_head,
+                "actor": self._actor,
+                "fast_critic": self._fast_critic,
+                "slow_critic": self._slow_critic,
+                "actor_loss": self._actor_loss_fn,  # has EMA buffers
+                "world_model_optimizer": self._world_model_optimizer,
+                "actor_optimizer": self._actor_optimizer,
+                "critic_optimizer": self._critic_optimizer,
+            },
+            directory=directory,
+        )
 
-    def load(self, path) -> None:
-        pass
+    def save(
+        self,
+        name: str,
+        env_step: int = 0,
+        gradient_step: int = 0,
+        **extra: object,
+    ) -> str:
+        return self._checkpoint_manager().save(
+            name, env_step=env_step, gradient_step=gradient_step, **extra
+        )
+
+    def load(self, path: str) -> dict[str, int]:
+        return self._checkpoint_manager().load(path, device=self._device)
+
+    @torch.no_grad()
+    def eval(self, n_episodes: int = 100) -> dict[str, float]:
+        """Evaluate the greedy policy over n_episodes.
+
+        Switches to eval mode, runs deterministic argmax actions, then restores
+        train mode. Returns mean and std of per-episode return and length.
+        """
+        was_training = self._actor.training
+        for m in (self._encoder, self._rssm, self._actor):
+            m.eval()
+
+        returns: list[float] = []
+        lengths: list[int] = []
+        for _ in range(n_episodes):
+            obs, _ = self._eval_env.reset()
+            obs = torch.from_numpy(obs).to(self._device)
+            h = self._rssm.get_initial_recurrent_state().to(self._device)
+            ep_return = 0.0
+            ep_length = 0
+            done = False
+            while not done:
+                encoded_obs = self._encoder(obs)
+                z, _ = self._rssm.get_posterior(encoded_obs, h)
+                action_logits = self._actor(torch.cat([h, z], dim=-1))
+                action_idx = int(action_logits.argmax(-1).item())
+                action_one_hot = F.one_hot(
+                    torch.tensor(action_idx, device=self._device),
+                    num_classes=self._action_size,
+                ).float()
+                h = self._rssm.step(h, z, action_one_hot)
+                next_obs, reward, terminated, truncated, _ = self._eval_env.step(action_idx)
+                ep_return += float(reward)
+                ep_length += 1
+                done = bool(terminated or truncated)
+                obs = torch.from_numpy(next_obs).to(self._device)
+            returns.append(ep_return)
+            lengths.append(ep_length)
+
+        if was_training:
+            for m in (self._encoder, self._rssm, self._actor):
+                m.train()
+
+        returns_t = torch.tensor(returns, dtype=torch.float32)
+        lengths_t = torch.tensor(lengths, dtype=torch.float32)
+        return {
+            "eval/return_mean": returns_t.mean().item(),
+            "eval/return_std": returns_t.std(unbiased=False).item(),
+            "eval/length_mean": lengths_t.mean().item(),
+            "eval/length_std": lengths_t.std(unbiased=False).item(),
+        }

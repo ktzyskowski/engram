@@ -10,3 +10,7 @@ wheels/
 .venv
 
 .pytest_cache
+
+# Experiment artifacts
+**/checkpoints/*
+mlflow.db
