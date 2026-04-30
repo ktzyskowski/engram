@@ -125,7 +125,7 @@ class DreamerV3:
         self._decoder = MLP(
             input_size=self._rssm.full_state_size,
             hidden_sizes=params["decoder_hidden_sizes"],
-            output_size=params["observation_size"],
+            output_size=self._observation_size,
             activation=params["decoder_activation"],
         ).to(self._device)
 
@@ -419,7 +419,9 @@ class DreamerV3:
                     num_classes=self._action_size,
                 ).float()
                 h = self._rssm.step(h, z, action_one_hot)
-                next_obs, reward, terminated, truncated, _ = self._eval_env.step(action_idx)
+                next_obs, reward, terminated, truncated, _ = self._eval_env.step(
+                    action_idx
+                )
                 ep_return += float(reward)
                 ep_length += 1
                 done = bool(terminated or truncated)
